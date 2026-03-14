@@ -33,5 +33,12 @@ Repository = "https://github.com/jfrancis42/reparatio-sdk"
 "MCP Server" = "https://github.com/jfrancis42/reparatio-mcp"
 "CLI Tool" = "https://github.com/jfrancis42/reparatio-cli"
 
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/reparatio"]
