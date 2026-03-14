@@ -1,8 +1,12 @@
 # reparatio — Python SDK
 
+> **Alpha software.** The API surface may change without notice between versions. Pin to a specific version in production.
+
 Python client library for the [Reparatio](https://reparatio.app) data conversion API.
 
 Inspect, convert, merge, append, and query CSV, Excel, Parquet, JSON, GeoJSON, SQLite, and 30+ other formats with a single function call.
+
+**See also:** [reparatio-cli](https://github.com/jfrancis42/reparatio-cli) (command-line tool) · [reparatio-mcp](https://github.com/jfrancis42/reparatio-mcp) (MCP server for AI assistants)
 
 ---
 
@@ -50,7 +54,7 @@ The API key can be supplied in three ways, in order of precedence:
 2. Environment variable: `REPARATIO_API_KEY=rp_...`
 3. Omitted entirely (only `inspect` and `formats` work without a key)
 
-Get a key at [reparatio.app](https://reparatio.app) (Monthly plan).
+Get a key at [reparatio.app](https://reparatio.app) (Professional plan — $79/mo). API access requires the Professional plan; the Standard plan ($29/mo) covers web UI only.
 
 ---
 
@@ -143,7 +147,7 @@ for row in result.preview:
 ### `client.convert(file, target_format, ...) → ConvertResult`
 
 Convert a file from any supported input format to any supported output format.
-Requires a Monthly plan key.
+Requires a Professional plan key ($79/mo).
 
 ```python
 # Basic conversion
@@ -179,13 +183,83 @@ out = client.convert("events.csv", "xlsx", deduplicate=True, sample_frac=0.1)
 | `sample_n` | int | `0` | Random sample of N rows |
 | `sample_frac` | float | `0.0` | Random sample fraction (e.g. `0.1` for 10%) |
 | `geometry_column` | str | `"geometry"` | WKT geometry column for GeoJSON output |
+| `cast_columns` | dict | `{}` | Override inferred column types (see below) |
+| `null_values` | list[str] | `[]` | Strings to treat as null at load time, e.g. `["N/A", "NULL", "-"]` |
+| `encoding_override` | str | `None` | Force a specific encoding, bypassing auto-detection. Any Python codec name: `"cp037"` (EBCDIC US), `"cp500"` (EBCDIC International), `"cp1026"` (EBCDIC Turkish), `"cp1140"` (EBCDIC US+Euro), `"latin-1"`, etc. |
+
+**`cast_columns` format:**
+
+```python
+# Cast price to Float64 and parse date from "31/12/2024" format
+out = client.convert(
+    "sales.csv",
+    "parquet",
+    cast_columns={
+        "price": {"type": "Float64"},
+        "date":  {"type": "Date", "format": "%d/%m/%Y"},
+    },
+)
+```
+
+Supported types: `String`, `Int8`–`Int64`, `UInt8`–`UInt64`, `Float32`, `Float64`,
+`Boolean`, `Date`, `Datetime`, `Time`. Values that cannot be cast are silently set to null.
+
+**EBCDIC and encoding override:**
+
+```python
+# Convert an EBCDIC mainframe file (cp037 = EBCDIC US)
+out = client.convert("mainframe.dat", "csv", encoding_override="cp037")
+Path(out.filename).write_bytes(out.content)
+
+# EBCDIC International (cp500)
+out = client.convert("ibm_export.dat", "parquet", encoding_override="cp500")
+Path(out.filename).write_bytes(out.content)
+```
+
+When `encoding_override` is set, chardet auto-detection is skipped entirely and the
+specified codec is used directly. Omit the parameter (or pass `None`) to use the
+default auto-detection behaviour, which also includes an EBCDIC heuristic.
+
+---
+
+### `client.batch_convert(zip_file, target_format, ...) → ConvertResult`
+
+Convert every file inside a ZIP archive to a common format.
+Returns a ZIP archive in `result.content`. Files that fail to parse are skipped;
+their names and errors are available as a JSON string in `result.warning`.
+Requires a Professional plan key ($79/mo).
+
+```python
+out = client.batch_convert("monthly_reports.zip", "parquet")
+Path("converted.zip").write_bytes(out.content)
+if out.warning:
+    import json
+    for err in json.loads(out.warning):
+        print(f"Skipped {err['file']}: {err['error']}")
+```
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `zip_file` | str / Path / bytes | required | ZIP archive path or raw bytes |
+| `target_format` | str | required | Output format for every file |
+| `filename` | str | `"batch.zip"` | Original filename (when passing bytes) |
+| `no_header` | bool | `False` | Treat first row as data |
+| `fix_encoding` | bool | `True` | Repair encoding |
+| `delimiter` | str | `""` | Custom delimiter |
+| `select_columns` | list[str] | `[]` | Columns to include (all if empty) |
+| `deduplicate` | bool | `False` | Remove duplicate rows from each file |
+| `sample_n` | int | `0` | Random sample of N rows per file |
+| `sample_frac` | float | `0.0` | Random sample fraction per file |
+| `cast_columns` | dict | `{}` | Column type overrides for every file |
 
 ---
 
 ### `client.merge(file1, file2, operation, target_format, ...) → ConvertResult`
 
 Merge or join two files.
-Requires a Monthly plan key.
+Requires a Professional plan key ($79/mo).
 
 ```python
 out = client.merge(
@@ -231,7 +305,7 @@ if out.warning:
 
 Stack rows from two or more files vertically.
 Column mismatches are handled gracefully — missing values are filled with null.
-Requires a Monthly plan key.
+Requires a Professional plan key ($79/mo).
 
 ```python
 import glob
@@ -257,7 +331,7 @@ Path("all_months.parquet").write_bytes(out.content)
 
 Run a SQL query against a file.
 The file is loaded as a table named `data`.
-Requires a Monthly plan key.
+Requires a Professional plan key ($79/mo).
 
 ```python
 out = client.query(
@@ -323,7 +397,7 @@ All errors are subclasses of `reparatio.ReparatioError`:
 | Exception | Cause |
 |---|---|
 | `AuthenticationError` | Missing, invalid, or expired API key |
-| `InsufficientPlanError` | Operation requires a Monthly plan |
+| `InsufficientPlanError` | Operation requires a Professional plan |
 | `FileTooLargeError` | File exceeds the server's size limit |
 | `ParseError` | File could not be parsed in the detected format |
 | `APIError` | Unexpected server error (has `.status_code` and `.detail`) |

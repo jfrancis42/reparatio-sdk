@@ -154,8 +154,14 @@ class Reparatio:
         sample_n: int = 0,
         sample_frac: float = 0.0,
         geometry_column: str = "geometry",
+        cast_columns: Optional[dict] = None,
+        null_values: Optional[List[str]] = None,
+        encoding_override: Optional[str] = None,
     ) -> ConvertResult:
         """Convert a file to a different format.
+
+        Requires a Professional plan API key ($79/mo). Standard plan ($29/mo)
+        covers web UI conversions only; API access requires Professional.
 
         Returns a :class:`ConvertResult` whose ``.content`` attribute holds
         the raw bytes of the converted file.
@@ -170,30 +176,107 @@ class Reparatio:
             Rename all columns (list of new names in order).
         select_columns:
             Whitelist of column names to include in output.
+        cast_columns:
+            Override inferred column types.  Dict mapping column name to a
+            spec dict with ``"type"`` (required) and optional ``"format"``
+            for date/datetime parsing.  Example::
+
+                {"price": {"type": "Float64"},
+                 "date":  {"type": "Date", "format": "%d/%m/%Y"}}
+
+            Supported types: ``String``, ``Int8``–``Int64``, ``UInt8``–``UInt64``,
+            ``Float32``, ``Float64``, ``Boolean``, ``Date``, ``Datetime``, ``Time``.
+        null_values:
+            List of strings to treat as null at load time, passed as Polars
+            ``null_values=``.  Example: ``["N/A", "NULL", "-"]``.
+        encoding_override:
+            Force a specific encoding instead of auto-detecting.  Pass any
+            Python codec name, e.g. ``"cp037"`` (EBCDIC US), ``"cp500"``
+            (EBCDIC International), ``"cp1026"`` (EBCDIC Turkish),
+            ``"cp1140"`` (EBCDIC US with Euro), ``"latin-1"``, etc.
+            When absent or ``None``, auto-detection runs as normal.
         """
         import json as _json
 
         content, fname = _load_file(file, filename)
+        form_data: dict = {
+            "target_format": target_format,
+            "no_header": str(no_header).lower(),
+            "fix_encoding": str(fix_encoding).lower(),
+            "delimiter": delimiter,
+            "sheet": sheet,
+            "columns": _json.dumps(columns or []),
+            "select_columns": _json.dumps(select_columns or []),
+            "deduplicate": str(deduplicate).lower(),
+            "sample_n": str(sample_n),
+            "sample_frac": str(sample_frac),
+            "geometry_column": geometry_column,
+            "cast_columns": _json.dumps(cast_columns or {}),
+            "null_values": _json.dumps(null_values or []),
+        }
+        if encoding_override:
+            form_data["encoding_override"] = encoding_override
         r = self._client.post(
             "/api/v1/convert",
             files={"file": (fname, content)},
+            data=form_data,
+        )
+        _raise_for_status(r)
+        out_name = _filename_from_response(r, fname.rsplit(".", 1)[0] + "." + target_format)
+        warning = r.headers.get("x-reparatio-warning")
+        return ConvertResult(content=r.content, filename=out_name, warning=warning)
+
+    def batch_convert(
+        self,
+        zip_file: Union[str, Path, bytes],
+        target_format: str,
+        *,
+        filename: str = "batch.zip",
+        no_header: bool = False,
+        fix_encoding: bool = True,
+        delimiter: str = "",
+        select_columns: Optional[List[str]] = None,
+        deduplicate: bool = False,
+        sample_n: int = 0,
+        sample_frac: float = 0.0,
+        cast_columns: Optional[dict] = None,
+    ) -> ConvertResult:
+        """Convert every file inside a ZIP and return a ZIP of converted files.
+
+        Files that cannot be parsed are skipped; their names and error
+        messages are available in ``result.warning`` (JSON string from the
+        ``X-Reparatio-Errors`` response header).
+
+        Parameters
+        ----------
+        zip_file:
+            Path to a ``.zip`` archive, or raw bytes of the ZIP.
+        target_format:
+            Output format for every file inside the ZIP, e.g. ``"parquet"``.
+        """
+        import json as _json
+        import urllib.parse as _up
+
+        content, fname = _load_file(zip_file, filename)
+        r = self._client.post(
+            "/api/v1/batch-convert",
+            files={"zip_file": (fname, content)},
             data={
                 "target_format": target_format,
                 "no_header": str(no_header).lower(),
                 "fix_encoding": str(fix_encoding).lower(),
                 "delimiter": delimiter,
-                "sheet": sheet,
-                "columns": _json.dumps(columns or []),
                 "select_columns": _json.dumps(select_columns or []),
                 "deduplicate": str(deduplicate).lower(),
                 "sample_n": str(sample_n),
                 "sample_frac": str(sample_frac),
-                "geometry_column": geometry_column,
+                "cast_columns": _json.dumps(cast_columns or {}),
             },
         )
         _raise_for_status(r)
-        out_name = _filename_from_response(r, fname.rsplit(".", 1)[0] + "." + target_format)
-        warning = r.headers.get("x-reparatio-warning")
+        out_name = _filename_from_response(r, "converted.zip")
+        raw_errors = r.headers.get("x-reparatio-errors")
+        warning = _up.unquote(raw_errors) if raw_errors else None
         return ConvertResult(content=r.content, filename=out_name, warning=warning)
 
     def merge(
